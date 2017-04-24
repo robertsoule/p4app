@@ -89,10 +89,11 @@ parser ParserImpl(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-	transition select(hdr.ipv4.protocol) {
-            UDP_PROTOCOL : parse_udp;
-            default: accept;
-        }
+	transition accept;
+	// transition select(hdr.ipv4.protocol) {
+        //     UDP_PROTOCOL : parse_udp;
+        //     default: accept;
+        // }
 
     }
     
@@ -231,9 +232,9 @@ control DeparserImpl(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
-        packet.emit(hdr.udp);
-	packet.emit(hdr.babyint);
-	packet.emit(hdr.swids);			
+        //packet.emit(hdr.udp);
+	//packet.emit(hdr.babyint);
+	//packet.emit(hdr.swids);			
     }
 }
 
