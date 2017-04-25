@@ -4,76 +4,86 @@
 
 const bit<8>  UDP_PROTOCOL = 0x11;
 const bit<16> TYPE_IPV4 = 0x800;
+const bit<5>  IP_OPTION_MRI = 31;
+
+#define MAX_HOPS 9
 
 /*************************************************************************
- *********************** H E A D E R S  ***********************************
- *************************************************************************/
+*********************** H E A D E R S  ***********************************
+*************************************************************************/
+
+typedef bit<9>  egressSpec_t;
+typedef bit<48> macAddr_t;
+typedef bit<32> ip4Addr_t;
+typedef bit<32> switchID_t;
 
 header ethernet_t {
-    bit<48> dstAddr;
-    bit<48> srcAddr;
-    bit<16> etherType;
+    macAddr_t dstAddr;
+    macAddr_t srcAddr;
+    bit<16>   etherType;
 }
 
 header ipv4_t {
-    bit<4>  version;
-    bit<4>  ihl;
-    bit<8>  diffserv;
-    bit<16> totalLen;
-    bit<16> identification;
-    bit<3>  flags;
-    bit<13> fragOffset;
-    bit<8>  ttl;
-    bit<8>  protocol;
-    bit<16> hdrChecksum;
-    bit<32> srcAddr;
-    bit<32> dstAddr;
+    bit<4>    version;
+    bit<4>    ihl;
+    bit<8>    diffserv;
+    bit<16>   totalLen;
+    bit<16>   identification;
+    bit<3>    flags;
+    bit<13>   fragOffset;
+    bit<8>    ttl;
+    bit<8>    protocol;
+    bit<16>   hdrChecksum;
+    ip4Addr_t srcAddr;
+    ip4Addr_t dstAddr;
 }
 
-header udp_t {
-    bit<16> srcPort;
-    bit<16> dstPort;
-    bit<16> length;
-    bit<16> checksum;
+header ip_option_t {
+    bit<1> copyFlag;
+    bit<2> optClass;
+    bit<5> option;
+    bit<8> optionLength;
 }
 
-header babyint_t {
-    bit<8>  count;
+header mri_t {
+    bit<16>  count;
 }
 
 header switch_t {
-    bit<8>  swid;
+    switchID_t  swid;
 }
 
 struct ingress_metadata_t {
-    bit<32> nhop_ipv4;
+    bit<16>  count;
 }
 
 struct parser_metadata_t {
-    bit<8>  remaining;
+    bit<16>  remaining;
 }
 
 struct metadata {
-  ingress_metadata_t   ingress_metadata;
-  parser_metadata_t   parser_metadata;
+    ingress_metadata_t   ingress_metadata;
+    parser_metadata_t   parser_metadata;
 }
 
 struct headers {
     ethernet_t   ethernet;
     ipv4_t       ipv4;
-    udp_t        udp;
-    babyint_t    babyint;
-    switch_t[10] swids;
+    ip_option_t  ip_option;
+    mri_t        mri;
+    switch_t[MAX_HOPS] swids;
 }
 
+error { IPHeaderTooShort }
+
 /*************************************************************************
- *********************** P A R S E R  ***********************************
- *************************************************************************/
+*********************** P A R S E R  ***********************************
+*************************************************************************/
 
 parser ParserImpl(packet_in packet,
-       		  out headers hdr,
-		  inout metadata meta,
-		  inout standard_metadata_t standard_metadata) {
+out headers hdr,
+inout metadata meta,
+inout standard_metadata_t standard_metadata) {
 
     state start {
         transition parse_ethernet;
@@ -89,43 +99,44 @@ parser ParserImpl(packet_in packet,
 
     state parse_ipv4 {
         packet.extract(hdr.ipv4);
-	transition accept;
-	// transition select(hdr.ipv4.protocol) {
-        //     UDP_PROTOCOL : parse_udp;
-        //     default: accept;
-        // }
-
-    }
-    
-    state parse_udp {
-        packet.extract(hdr.udp);
-	transition accept;
+	verify(hdr.ipv4.ihl >= 5, error.IPHeaderTooShort);
+	transition select(hdr.ipv4.ihl) {
+	    5             : accept;
+	    default       : parse_ip_option;
+        }
     }
 
-    state parse_babyint {
-         packet.extract(hdr.babyint);
-	 meta.parser_metadata.remaining = hdr.babyint.count;
-         transition select(hdr.babyint.count) {
-             0 : accept;
-             default: parse_swid;
-	 }
+    state parse_ip_option {
+        packet.extract(hdr.ip_option);
+	transition select(hdr.ip_option.option) {
+	    IP_OPTION_MRI: parse_mri;
+	    default: accept;
+	}
+    }
+
+    state parse_mri {
+        packet.extract(hdr.mri);
+	meta.parser_metadata.remaining = hdr.mri.count;
+        transition select(meta.parser_metadata.remaining) {
+            0 : accept;
+            default: parse_swid;
+	}
     }
 
     state parse_swid {
-         packet.extract(hdr.swids.next);
-	 meta.parser_metadata.remaining = meta.parser_metadata.remaining  - 1;
-         transition select(meta.parser_metadata.remaining) {
-             0 : accept;
-             default: parse_swid;
-	 }
-    }
-    
+        packet.extract(hdr.swids.next);
+	meta.parser_metadata.remaining = meta.parser_metadata.remaining  - 1;
+        transition select(meta.parser_metadata.remaining) {
+            0 : accept;
+            default: parse_swid;
+	}
+    }    
 }
 
 
 /*************************************************************************
- ************   C H E C K S U M    V E R I F I C A T I O N   *************
- *************************************************************************/
+************   C H E C K S U M    V E R I F I C A T I O N   *************
+*************************************************************************/
 
 control verifyChecksum(in headers hdr, inout metadata meta) {   
     apply {  }
@@ -133,120 +144,105 @@ control verifyChecksum(in headers hdr, inout metadata meta) {
 
 
 /*************************************************************************
- **************  I N G R E S S   P R O C E S S I N G   *******************
- *************************************************************************/
+**************  I N G R E S S   P R O C E S S I N G   *******************
+*************************************************************************/
 
 control ingress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
-    @name("_drop") action _drop() {
+    action drop() {
         mark_to_drop();
     }
-    @name("add_int") action add_int() {
-      hdr.babyint.count = hdr.babyint.count + 1;
-      hdr.swids.push_front(1);
-      hdr.swids[0].swid = 50;
+    action add_mri_option() {
+	hdr.ip_option.setValid();
+	// TODO: Populate with vaid options
+	
+	hdr.mri.setValid();
+	// TODO: Add 1 to ihl
     }
-    @name("set_nhop") action set_nhop(bit<32> nhop_ipv4, bit<9> port) {
-        meta.ingress_metadata.nhop_ipv4 = nhop_ipv4;
+    action add_swid(switchID_t id) {
+	
+	hdr.mri.count = meta.ingress_metadata.count + 1;
+	hdr.swids.push_front(1);
+	hdr.swids[0].swid = id;
+	// TODO: Add 1 to ihl
+    }
+    
+    action ipv4_forward(macAddr_t dstAddr, egressSpec_t port) {
         standard_metadata.egress_spec = port;
-        hdr.ipv4.ttl = hdr.ipv4.ttl + 8w255;
-    }
-    @name("set_dmac") action set_dmac(bit<48> dmac) {
-        hdr.ethernet.dstAddr = dmac;
+	hdr.ethernet.srcAddr = hdr.ethernet.dstAddr;
+	hdr.ethernet.dstAddr = dstAddr;
+        hdr.ipv4.ttl = hdr.ipv4.ttl - 1;
     }
 
-    @name("ipv4_lpm") table ipv4_lpm {
-        actions = {
-            _drop;
-            set_nhop;
-            NoAction;
-        }
+    table swid {
+	actions = { add_swid; NoAction; }
+	size = 1;
+	default_action = NoAction();
+
+    }
+    
+    table ipv4_lpm {
         key = {
             hdr.ipv4.dstAddr: lpm;
+        }
+        actions = {
+	    ipv4_forward;
+            drop;
+            NoAction;
         }
         size = 1024;
         default_action = NoAction();
     }
-    @name("forward") table forward {
-        actions = {
-            set_dmac;
-            _drop;
-            NoAction;
-        }
-        key = {
-            meta.ingress_metadata.nhop_ipv4: exact;
-        }
-        size = 512;
-        default_action = NoAction();
-    }
+    
     apply {
         if (hdr.ipv4.isValid()) {
-          ipv4_lpm.apply();
-          forward.apply();
+            ipv4_lpm.apply();
         }
+	if (hdr.mri.isValid()) {
+	    meta.ingress_metadata.count = hdr.mri.count;
+	    swid.apply();
+	}
     }
 }
 
 /*************************************************************************
- ****************  E G R E S S   P R O C E S S I N G   *******************
- *************************************************************************/
+****************  E G R E S S   P R O C E S S I N G   *******************
+*************************************************************************/
 
 control egress(inout headers hdr, inout metadata meta, inout standard_metadata_t standard_metadata) {
-    @name("rewrite_mac") action rewrite_mac(bit<48> smac) {
-        hdr.ethernet.srcAddr = smac;
-    }
-    @name("_drop") action _drop() {
-        mark_to_drop();
-    }
-    @name("send_frame") table send_frame {
-        actions = {
-            rewrite_mac;
-            _drop;
-            NoAction;
-        }
-        key = {
-            standard_metadata.egress_port: exact;
-        }
-        size = 256;
-        default_action = NoAction();
-    }
-    apply {
-        if (hdr.ipv4.isValid()) {
-          send_frame.apply();
-        }
-    }
+    apply {  }
 }
 
 /*************************************************************************
- *************   C H E C K S U M    C O M P U T A T I O N   **************
- *************************************************************************/
- 
+*************   C H E C K S U M    C O M P U T A T I O N   **************
+*************************************************************************/
+
 control computeChecksum(inout headers hdr, inout metadata meta) {
     apply { }
 }
 
 /*************************************************************************
- ***********************  D E P A R S E R  *******************************
- *************************************************************************/
+***********************  D E P A R S E R  *******************************
+*************************************************************************/
 
 control DeparserImpl(packet_out packet, in headers hdr) {
     apply {
         packet.emit(hdr.ethernet);
         packet.emit(hdr.ipv4);
-        //packet.emit(hdr.udp);
-	//packet.emit(hdr.babyint);
-	//packet.emit(hdr.swids);			
+	packet.emit(hdr.ip_option);
+	packet.emit(hdr.mri);
+	packet.emit(hdr.swids);			
     }
 }
 
 /*************************************************************************
- ***********************  S W I T C H  *******************************
- *************************************************************************/
+***********************  S W I T C H  *******************************
+*************************************************************************/
 
 V1Switch(
- ParserImpl(),
- verifyChecksum(),
- ingress(),
- egress(),
- computeChecksum(),
- DeparserImpl()
- ) main;
+ParserImpl(),
+verifyChecksum(),
+ingress(),
+egress(),
+computeChecksum(),
+DeparserImpl()
+) main;

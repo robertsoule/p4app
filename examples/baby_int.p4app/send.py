@@ -22,18 +22,16 @@ class IPOption_MRI(IPOption):
                                    [],
                                    IntField("", 0),
                                    length_from=lambda pkt:pkt.count) ]
-    # def post_build(self, p, pay):
-    #     if self.count is None:
-    #         self.count = len(self.swids)
             
     
 def main():
     
     addr = socket.gethostbyname(sys.argv[1])
+    iface = sys.argv[2]
 
     pkt = Ether() / IP(dst=addr, options = IPOption_MRI(count=2, swids=[3,4])) / UDP(dport=8000) / "hello"
     pkt.show()
-    sendp(pkt, iface="en0")
+    sendp(pkt, iface=iface)
     
 
 if __name__ == '__main__':
