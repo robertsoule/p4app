@@ -1,5 +1,5 @@
 {
-    "program": "baby_int.p4",
+    "program": "mri.p4",
     "language": "p4-16",
     "targets": {
 	"mininet": {
